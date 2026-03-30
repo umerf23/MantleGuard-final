@@ -6,12 +6,26 @@ declare global {
   }
 }
 
-// Mantle Mainnet Config
-const MANTLE_CHAIN_ID = '0x1388'; // 5000 in hex
+const MANTLE_CHAIN_ID = '0x1388';
 const MANTLE_RPC = 'https://rpc.mantle.xyz';
 
+// Detect if MetaMask is available (better detection)
+const getProvider = () => {
+  if (typeof window === 'undefined') return null;
+  
+  const { ethereum } = window;
+  
+  // Prefer MetaMask if available
+  if (ethereum?.isMetaMask) {
+    return ethereum;
+  }
+  
+  // Fallback to any ethereum provider
+  return ethereum;
+};
+
 export const isWalletAvailable = (): boolean => {
-  return typeof window !== 'undefined' && Boolean(window.ethereum);
+  return !!getProvider();
 };
 
 export const shortenAddress = (address: string): string => {
@@ -21,62 +35,54 @@ export const shortenAddress = (address: string): string => {
 
 export const isMantle = (chainId?: string): boolean => {
   if (!chainId) {
-    chainId = window.ethereum?.chainId;
+    chainId = getProvider()?.chainId;
   }
   return chainId?.toLowerCase() === MANTLE_CHAIN_ID.toLowerCase();
 };
 
 export const connectWallet = async (): Promise<string | null> => {
-  if (!isWalletAvailable()) {
-    throw new Error("MetaMask or compatible wallet not found. Please install MetaMask.");
+  const provider = getProvider();
+  if (!provider) {
+    throw new Error("No wallet detected. Please install MetaMask.");
   }
 
   try {
-    const accounts = await window.ethereum.request({
+    const accounts = await provider.request({
       method: 'eth_requestAccounts',
     });
     return accounts[0] || null;
   } catch (error: any) {
     if (error.code === 4001) {
-      throw new Error("User rejected the connection request.");
+      throw new Error("Connection request rejected by user.");
     }
     throw new Error(error.message || "Failed to connect wallet");
   }
 };
 
 export const switchToMantle = async (): Promise<void> => {
-  if (!isWalletAvailable()) {
-    throw new Error("Wallet not available");
-  }
+  const provider = getProvider();
+  if (!provider) throw new Error("Wallet not available");
 
   try {
-    await window.ethereum.request({
+    await provider.request({
       method: 'wallet_switchEthereumChain',
       params: [{ chainId: MANTLE_CHAIN_ID }],
     });
   } catch (switchError: any) {
-    // This error code means the chain has not been added to MetaMask
     if (switchError.code === 4902) {
-      try {
-        await window.ethereum.request({
-          method: 'wallet_addEthereumChain',
-          params: [{
-            chainId: MANTLE_CHAIN_ID,
-            chainName: 'Mantle Mainnet',
-            nativeCurrency: {
-              name: 'MNT',
-              symbol: 'MNT',
-              decimals: 18,
-            },
-            rpcUrls: [MANTLE_RPC],
-            blockExplorerUrls: ['https://explorer.mantle.xyz'],
-          }],
-        });
-      } catch (addError) {
-        throw new Error("Failed to add Mantle network");
-      }
+      // Add network if not present
+      await provider.request({
+        method: 'wallet_addEthereumChain',
+        params: [{
+          chainId: MANTLE_CHAIN_ID,
+          chainName: 'Mantle Mainnet',
+          nativeCurrency: { name: 'MNT', symbol: 'MNT', decimals: 18 },
+          rpcUrls: [MANTLE_RPC],
+          blockExplorerUrls: ['https://explorer.mantle.xyz'],
+        }],
+      });
     } else {
-      throw new Error(switchError.message || "Failed to switch to Mantle network");
+      throw new Error(switchError.message || "Failed to switch network");
     }
   }
 };
