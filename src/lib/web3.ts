@@ -129,7 +129,9 @@ export async function switchToMantle(): Promise<void> {
     }
   }
 }
-
+export const isWalletAvailable = () => {
+  return typeof window !== 'undefined' && !!window.ethereum;
+};
 export function isMantle(chainId: string): boolean {
   return chainId === MANTLE_MAINNET.chainId || chainId === MANTLE_TESTNET.chainId;
 }
