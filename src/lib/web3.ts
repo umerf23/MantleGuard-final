@@ -1,137 +1,82 @@
-// mantleguard-vercel/src/lib/web3.ts
-import { BrowserProvider } from "ethers";
+import { ethers } from 'ethers';
 
-export const MANTLE_MAINNET = {
-  chainId: "0x1388",
-  chainIdDecimal: 5000,
-  chainName: "Mantle",
-  rpcUrls: ["https://rpc.mantle.xyz"],
-  nativeCurrency: { name: "MNT", symbol: "MNT", decimals: 18 },
-  blockExplorerUrls: ["https://explorer.mantle.xyz"],
+declare global {
+  interface Window {
+    ethereum?: any;
+  }
+}
+
+// Mantle Mainnet Config
+const MANTLE_CHAIN_ID = '0x1388'; // 5000 in hex
+const MANTLE_RPC = 'https://rpc.mantle.xyz';
+
+export const isWalletAvailable = (): boolean => {
+  return typeof window !== 'undefined' && Boolean(window.ethereum);
 };
 
-export const MANTLE_TESTNET = {
-  chainId: "0x138B",
-  chainIdDecimal: 5003,
-  chainName: "Mantle Sepolia Testnet",
-  rpcUrls: ["https://rpc.sepolia.mantle.xyz"],
-  nativeCurrency: { name: "MNT", symbol: "MNT", decimals: 18 },
-  blockExplorerUrls: ["https://explorer.sepolia.mantle.xyz"],
-};
-
-export function shortenAddress(address: string): string {
+export const shortenAddress = (address: string): string => {
+  if (!address) return '';
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
-}
-
-// 🔥 FINAL MULTI-WALLET FIX (MetaMask + Rabby + OKX + Phantom)
-function getInjectedProvider(): any {
-  if (typeof window === "undefined" || !window.ethereum) return null;
-
-  let eth = window.ethereum as any;
-
-  // 1. Prefer MetaMask if it exists
-  if (eth.isMetaMask === true) return eth;
-
-  // 2. Multiple providers array (most common with many extensions)
-  if (Array.isArray(eth.providers) && eth.providers.length > 0) {
-    const metaMask = eth.providers.find((p: any) => p.isMetaMask === true);
-    if (metaMask) return metaMask;
-    return eth.providers[0];
-  }
-
-  // 3. Fallback for other injection styles
-  if (eth.providers && typeof eth.providers === "object") {
-    const metaMask = Object.values(eth.providers).find((p: any) => (p as any).isMetaMask === true);
-    if (metaMask) return metaMask;
-    return Object.values(eth.providers)[0];
-  }
-
-  return eth;
-}
-
-function setGlobalProvider() {
-  const provider = getInjectedProvider();
-  if (provider) (window as any).ethereum = provider;
-  return provider;
-}
-
-export async function connectWallet(): Promise<string> {
-  const provider = setGlobalProvider();
-  if (!provider) {
-    throw new Error("No Web3 wallet detected. Please install MetaMask or another EVM wallet.");
-  }
-
-  try {
-    // Direct request (most reliable with Rabby/OKX)
-    const accounts: string[] = await provider.request({
-      method: "eth_requestAccounts",
-    });
-
-    if (!accounts || accounts.length === 0) {
-      throw new Error("No accounts found.");
-    }
-    return accounts[0];
-  } catch (err: any) {
-    console.error("Me: Unexpected error", err);
-
-    if (err.code === 4001) throw new Error("Connection rejected by user.");
-    if (err.code === -32002) throw new Error("Wallet is already processing a request. Please wait.");
-    throw new Error(err.message || "Failed to connect wallet");
-  }
-}
-
-export async function getCurrentAccount(): Promise<string | null> {
-  const provider = getInjectedProvider();
-  if (!provider) return null;
-  try {
-    const ethersProvider = new BrowserProvider(provider);
-    const accounts = await ethersProvider.listAccounts();
-    return accounts.length > 0 ? accounts[0].address : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function getChainId(): Promise<string> {
-  const provider = getInjectedProvider();
-  if (!provider) return "";
-  try {
-    const ethersProvider = new BrowserProvider(provider);
-    const network = await ethersProvider.getNetwork();
-    return "0x" + network.chainId.toString(16);
-  } catch {
-    return "";
-  }
-}
-
-export async function switchToMantle(): Promise<void> {
-  const provider = getInjectedProvider();
-  if (!provider) throw new Error("No wallet detected.");
-  try {
-    await provider.request({
-      method: "wallet_switchEthereumChain",
-      params: [{ chainId: MANTLE_MAINNET.chainId }],
-    });
-  } catch (err: any) {
-    if (err.code === 4902) {
-      await provider.request({
-        method: "wallet_addEthereumChain",
-        params: [{
-          chainId: MANTLE_MAINNET.chainId,
-          chainName: MANTLE_MAINNET.chainName,
-          rpcUrls: MANTLE_MAINNET.rpcUrls,
-          nativeCurrency: MANTLE_MAINNET.nativeCurrency,
-          blockExplorerUrls: MANTLE_MAINNET.blockExplorerUrls,
-        }],
-      });
-    } else {
-      throw err;
-    }
-  }
-}
-export const isWalletAvailable = () => {
-  return typeof window !== 'undefined' && !!window.ethereum;
 };
-export function isMantle(chainId: string): boolean {
-  return chainId === MANTLE_MAINNET.chainId || chainId === MANTLE_TESTNET.chainId;
-}
+
+export const isMantle = (chainId?: string): boolean => {
+  if (!chainId) {
+    chainId = window.ethereum?.chainId;
+  }
+  return chainId?.toLowerCase() === MANTLE_CHAIN_ID.toLowerCase();
+};
+
+export const connectWallet = async (): Promise<string | null> => {
+  if (!isWalletAvailable()) {
+    throw new Error("MetaMask or compatible wallet not found. Please install MetaMask.");
+  }
+
+  try {
+    const accounts = await window.ethereum.request({
+      method: 'eth_requestAccounts',
+    });
+    return accounts[0] || null;
+  } catch (error: any) {
+    if (error.code === 4001) {
+      throw new Error("User rejected the connection request.");
+    }
+    throw new Error(error.message || "Failed to connect wallet");
+  }
+};
+
+export const switchToMantle = async (): Promise<void> => {
+  if (!isWalletAvailable()) {
+    throw new Error("Wallet not available");
+  }
+
+  try {
+    await window.ethereum.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: MANTLE_CHAIN_ID }],
+    });
+  } catch (switchError: any) {
+    // This error code means the chain has not been added to MetaMask
+    if (switchError.code === 4902) {
+      try {
+        await window.ethereum.request({
+          method: 'wallet_addEthereumChain',
+          params: [{
+            chainId: MANTLE_CHAIN_ID,
+            chainName: 'Mantle Mainnet',
+            nativeCurrency: {
+              name: 'MNT',
+              symbol: 'MNT',
+              decimals: 18,
+            },
+            rpcUrls: [MANTLE_RPC],
+            blockExplorerUrls: ['https://explorer.mantle.xyz'],
+          }],
+        });
+      } catch (addError) {
+        throw new Error("Failed to add Mantle network");
+      }
+    } else {
+      throw new Error(switchError.message || "Failed to switch to Mantle network");
+    }
+  }
+};
