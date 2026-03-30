@@ -9,19 +9,11 @@ declare global {
 const MANTLE_CHAIN_ID = '0x1388';
 const MANTLE_RPC = 'https://rpc.mantle.xyz';
 
-// Detect if MetaMask is available (better detection)
 const getProvider = () => {
   if (typeof window === 'undefined') return null;
-  
   const { ethereum } = window;
-  
-  // Prefer MetaMask if available
-  if (ethereum?.isMetaMask) {
-    return ethereum;
-  }
-  
-  // Fallback to any ethereum provider
-  return ethereum;
+  if (ethereum?.isMetaMask) return ethereum;
+  return ethereum ?? null;
 };
 
 export const isWalletAvailable = (): boolean => {
@@ -34,35 +26,49 @@ export const shortenAddress = (address: string): string => {
 };
 
 export const isMantle = (chainId?: string): boolean => {
-  if (!chainId) {
-    chainId = getProvider()?.chainId;
-  }
-  return chainId?.toLowerCase() === MANTLE_CHAIN_ID.toLowerCase();
+  const id = chainId ?? getProvider()?.chainId;
+  if (!id) return false;
+  return id.toLowerCase() === MANTLE_CHAIN_ID.toLowerCase();
 };
 
+// Silently checks if the wallet is already connected — no popup
+export const getConnectedAccount = async (): Promise<string | null> => {
+  const provider = getProvider();
+  if (!provider) return null;
+  try {
+    const accounts: string[] = await provider.request({ method: 'eth_accounts' });
+    return accounts[0] ?? null;
+  } catch {
+    return null;
+  }
+};
+
+// Actively requests connection — triggers MetaMask popup
 export const connectWallet = async (): Promise<string | null> => {
   const provider = getProvider();
   if (!provider) {
-    throw new Error("No wallet detected. Please install MetaMask.");
+    throw new Error('No wallet detected. Please install MetaMask.');
   }
-
   try {
-    const accounts = await provider.request({
+    const accounts: string[] = await provider.request({
       method: 'eth_requestAccounts',
     });
-    return accounts[0] || null;
+    return accounts[0] ?? null;
   } catch (error: any) {
     if (error.code === 4001) {
-      throw new Error("Connection request rejected by user.");
+      throw new Error('Connection request rejected by user.');
     }
-    throw new Error(error.message || "Failed to connect wallet");
+    throw new Error(error.message || 'Failed to connect wallet');
   }
+};
+
+export const getCurrentChainId = (): string | null => {
+  return getProvider()?.chainId ?? null;
 };
 
 export const switchToMantle = async (): Promise<void> => {
   const provider = getProvider();
-  if (!provider) throw new Error("Wallet not available");
-
+  if (!provider) throw new Error('Wallet not available');
   try {
     await provider.request({
       method: 'wallet_switchEthereumChain',
@@ -70,7 +76,6 @@ export const switchToMantle = async (): Promise<void> => {
     });
   } catch (switchError: any) {
     if (switchError.code === 4902) {
-      // Add network if not present
       await provider.request({
         method: 'wallet_addEthereumChain',
         params: [{
@@ -82,7 +87,7 @@ export const switchToMantle = async (): Promise<void> => {
         }],
       });
     } else {
-      throw new Error(switchError.message || "Failed to switch network");
+      throw new Error(switchError.message || 'Failed to switch network');
     }
   }
 };
