@@ -1,28 +1,23 @@
-import { useState, useEffect } from 'react';
-import { 
-  connectWallet, 
-  switchToMantle, 
-  isMantle, 
-  shortenAddress 
+import { useState, useEffect, useCallback } from 'react';
+import {
+  connectWallet,
+  getConnectedAccount,
+  getCurrentChainId,
+  switchToMantle,
+  isMantle,
+  isWalletAvailable,
+  shortenAddress,
 } from '../lib/web3';
-
-// Safe helper functions
-const isWalletAvailable = (): boolean => {
-  return typeof window !== 'undefined' && Boolean(window.ethereum);
-};
 
 const subscribeToWalletEvents = (
   onAccountChange: (account: string | null) => void,
   onChainChange: (chainId: string) => void
 ) => {
-  if (typeof window === 'undefined' || !window.ethereum) {
-    return () => {};
-  }
+  if (typeof window === 'undefined' || !window.ethereum) return () => {};
 
   const handleAccountsChanged = (accounts: string[]) => {
     onAccountChange(accounts.length > 0 ? accounts[0] : null);
   };
-
   const handleChainChanged = (chainId: string) => {
     onChainChange(chainId);
   };
@@ -45,58 +40,51 @@ export const useWallet = () => {
 
   const walletAvailable = isWalletAvailable();
 
+  // Sync state from an account + chainId pair
+  const syncState = useCallback((addr: string | null, chainId: string | null) => {
+    setAccount(addr ?? '');
+    setIsConnected(!!addr);
+    setIsMantleNetwork(isMantle(chainId ?? undefined));
+  }, []);
+
   useEffect(() => {
     if (!walletAvailable) return;
 
+    // Silently check existing connection — no popup
+    const checkConnection = async () => {
+      const addr = await getConnectedAccount();
+      const chainId = getCurrentChainId();
+      syncState(addr, chainId);
+    };
+
+    checkConnection();
+
     const unsubscribe = subscribeToWalletEvents(
       (newAccount) => {
-        setAccount(newAccount || '');
-        setIsConnected(!!newAccount);
+        const chainId = getCurrentChainId();
+        syncState(newAccount, chainId);
       },
       (chainId) => {
         setIsMantleNetwork(isMantle(chainId));
       }
     );
 
-    // Check if already connected
-    const checkConnection = async () => {
-      try {
-        const connectedAccount = await connectWallet();
-        if (connectedAccount) {
-          setAccount(connectedAccount);
-          setIsConnected(true);
-          setIsMantleNetwork(isMantle());
-        }
-      } catch (err) {
-        console.error("Initial wallet check failed:", err);
-      }
-    };
-
-    checkConnection();
-
-    return () => {
-      if (unsubscribe) unsubscribe();
-    };
-  }, [walletAvailable]);
+    return unsubscribe;
+  }, [walletAvailable, syncState]);
 
   const connect = async () => {
     if (!walletAvailable) {
-      setError("MetaMask is not installed. Please install it to continue.");
+      setError('MetaMask is not installed. Please install it to continue.');
       return;
     }
-
     setLoading(true);
     setError('');
-
     try {
       const address = await connectWallet();
-      if (address) {
-        setAccount(address);
-        setIsConnected(true);
-        setIsMantleNetwork(isMantle());
-      }
+      const chainId = getCurrentChainId();
+      syncState(address, chainId);
     } catch (err: any) {
-      setError(err.message || "Failed to connect wallet");
+      setError(err.message || 'Failed to connect wallet');
       console.error(err);
     } finally {
       setLoading(false);
@@ -105,18 +93,16 @@ export const useWallet = () => {
 
   const switchNetwork = async () => {
     if (!isConnected) {
-      setError("Please connect your wallet first");
+      setError('Please connect your wallet first');
       return;
     }
-
     setLoading(true);
     setError('');
-
     try {
       await switchToMantle();
-      setIsMantleNetwork(true);
+      // chainChanged event will fire and update isMantleNetwork automatically
     } catch (err: any) {
-      setError(err.message || "Failed to switch to Mantle network");
+      setError(err.message || 'Failed to switch to Mantle network');
     } finally {
       setLoading(false);
     }
