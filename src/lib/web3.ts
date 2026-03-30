@@ -1,93 +1,102 @@
+// src/lib/web3.ts
 import { ethers } from 'ethers';
 
-declare global {
-  interface Window {
-    ethereum?: any;
-  }
+let discoveredProviders = new Map<string, any>();
+
+// Listen for EIP-6963 provider announcements (runs once)
+if (typeof window !== 'undefined') {
+  window.addEventListener('eip6963:announceProvider', (event: any) => {
+    const { info, provider } = event.detail;
+    if (info && provider) {
+      discoveredProviders.set(info.rdns, provider);
+      console.log(`[EIP-6963] Detected wallet: ${info.name} (${info.rdns})`);
+    }
+  });
+
+  // Request all providers to announce themselves
+  window.dispatchEvent(new Event('eip6963:requestProvider'));
 }
 
-const MANTLE_CHAIN_ID = '0x1388';
-const MANTLE_RPC = 'https://rpc.mantle.xyz';
-
-const getProvider = () => {
+export const getProvider = (preferredRdns = 'io.metamask'): any => {
   if (typeof window === 'undefined') return null;
-  const { ethereum } = window;
-  if (ethereum?.isMetaMask) return ethereum;
-  return ethereum ?? null;
-};
 
-export const isWalletAvailable = (): boolean => {
-  return !!getProvider();
-};
-
-export const shortenAddress = (address: string): string => {
-  if (!address) return '';
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
-};
-
-export const isMantle = (chainId?: string): boolean => {
-  const id = chainId ?? getProvider()?.chainId;
-  if (!id) return false;
-  return id.toLowerCase() === MANTLE_CHAIN_ID.toLowerCase();
-};
-
-// Silently checks if the wallet is already connected — no popup
-export const getConnectedAccount = async (): Promise<string | null> => {
-  const provider = getProvider();
-  if (!provider) return null;
-  try {
-    const accounts: string[] = await provider.request({ method: 'eth_accounts' });
-    return accounts[0] ?? null;
-  } catch {
-    return null;
-  }
-};
-
-// Actively requests connection — triggers MetaMask popup
-export const connectWallet = async (): Promise<string | null> => {
-  const provider = getProvider();
-  if (!provider) {
-    throw new Error('No wallet detected. Please install MetaMask.');
-  }
-  try {
-    const accounts: string[] = await provider.request({
-      method: 'eth_requestAccounts',
-    });
-    return accounts[0] ?? null;
-  } catch (error: any) {
-    if (error.code === 4001) {
-      throw new Error('Connection request rejected by user.');
+  // 1. Try EIP-6963 first (best for multi-wallet support)
+  if (discoveredProviders.size > 0) {
+    // Prefer MetaMask
+    if (discoveredProviders.has(preferredRdns)) {
+      return discoveredProviders.get(preferredRdns);
     }
-    throw new Error(error.message || 'Failed to connect wallet');
+    // Fallback to first available provider
+    return Array.from(discoveredProviders.values())[0];
   }
+
+  // 2. Legacy fallback
+  const { ethereum } = window as any;
+  if (!ethereum) return null;
+
+  // Prefer MetaMask if available
+  if (ethereum.isMetaMask) return ethereum;
+
+  // If it's an array (some extensions do this), try to find MetaMask
+  if (Array.isArray(ethereum)) {
+    return ethereum.find((p: any) => p?.isMetaMask) || ethereum[0];
+  }
+
+  return ethereum;
 };
 
-export const getCurrentChainId = (): string | null => {
-  return getProvider()?.chainId ?? null;
-};
-
-export const switchToMantle = async (): Promise<void> => {
-  const provider = getProvider();
-  if (!provider) throw new Error('Wallet not available');
+export const connectWallet = async (): Promise<{
+  address: string;
+  provider: ethers.BrowserProvider;
+  signer: ethers.Signer;
+} | null> => {
   try {
-    await provider.request({
-      method: 'wallet_switchEthereumChain',
-      params: [{ chainId: MANTLE_CHAIN_ID }],
-    });
-  } catch (switchError: any) {
-    if (switchError.code === 4902) {
-      await provider.request({
-        method: 'wallet_addEthereumChain',
-        params: [{
-          chainId: MANTLE_CHAIN_ID,
-          chainName: 'Mantle Mainnet',
-          nativeCurrency: { name: 'MNT', symbol: 'MNT', decimals: 18 },
-          rpcUrls: [MANTLE_RPC],
-          blockExplorerUrls: ['https://explorer.mantle.xyz'],
-        }],
+    const providerInstance = getProvider('io.metamask');
+
+    if (!providerInstance) {
+      throw new Error("No wallet provider detected. Please install MetaMask or another wallet.");
+    }
+
+    // Request account access
+    await providerInstance.request({ method: 'eth_requestAccounts' });
+
+    const ethersProvider = new ethers.BrowserProvider(providerInstance);
+    const signer = await ethersProvider.getSigner();
+    const address = await signer.getAddress();
+
+    // Auto switch to Mantle Mainnet
+    try {
+      await providerInstance.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: '0x1388' }], // 5000 in hex
       });
-    } else {
-      throw new Error(switchError.message || 'Failed to switch network');
+    } catch (switchError: any) {
+      if (switchError.code === 4902) {
+        // Chain not added → add it
+        await providerInstance.request({
+          method: 'wallet_addEthereumChain',
+          params: [{
+            chainId: '0x1388',
+            chainName: 'Mantle',
+            rpcUrls: ['https://rpc.mantle.xyz'],
+            nativeCurrency: { name: 'MNT', symbol: 'MNT', decimals: 18 },
+            blockExplorerUrls: ['https://explorer.mantle.xyz'],
+          }],
+        });
+      } else {
+        throw switchError;
+      }
     }
+
+    return { address, provider: ethersProvider, signer };
+
+  } catch (error: any) {
+    console.error("Wallet connection error:", error);
+    throw error;
   }
+};
+
+export const disconnectWallet = () => {
+  // Nothing to do for most wallets, just clear local state
+  console.log("Wallet disconnected");
 };
