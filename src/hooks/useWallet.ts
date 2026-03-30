@@ -1,131 +1,136 @@
-import { useState, useEffect, useCallback } from "react";
-import {
-  connectWallet,
-  getCurrentAccount,
-  getChainId,
-  switchToMantle,
-  isMantle,
-  isWalletAvailable,
-  shortenAddress,
-  subscribeToWalletEvents,
-  MANTLE_MAINNET,
-} from "@/lib/web3";
+import { useState, useEffect } from 'react';
+import { 
+  connectWallet, 
+  switchToMantle, 
+  isMantle, 
+  shortenAddress 
+} from '../lib/web3';
 
-export interface WalletState {
-  account: string | null;
-  shortAddress: string | null;
-  chainId: string | null;
-  isMantle: boolean;
-  isConnecting: boolean;
-  isSwitching: boolean;
-  error: string | null;
-  walletAvailable: boolean;
-}
+// Safe helper functions
+const isWalletAvailable = (): boolean => {
+  return typeof window !== 'undefined' && Boolean(window.ethereum);
+};
 
-export function useWallet() {
-  const [state, setState] = useState<WalletState>({
-    account: null,
-    shortAddress: null,
-    chainId: null,
-    isMantle: false,
-    isConnecting: false,
-    isSwitching: false,
-    error: null,
-    walletAvailable: isWalletAvailable(),
-  });
+const subscribeToWalletEvents = (
+  onAccountChange: (account: string | null) => void,
+  onChainChange: (chainId: string) => void
+) => {
+  if (typeof window === 'undefined' || !window.ethereum) {
+    return () => {};
+  }
 
-  const refresh = useCallback(async () => {
-    const account = await getCurrentAccount();
-    const chainId = await getChainId();
-    setState((prev) => ({
-      ...prev,
-      account,
-      shortAddress: account ? shortenAddress(account) : null,
-      chainId,
-      isMantle: isMantle(chainId),
-      walletAvailable: isWalletAvailable(),
-      error: null,
-    }));
-  }, []);
+  const handleAccountsChanged = (accounts: string[]) => {
+    onAccountChange(accounts.length > 0 ? accounts[0] : null);
+  };
 
-  // Refresh on mount
+  const handleChainChanged = (chainId: string) => {
+    onChainChange(chainId);
+  };
+
+  window.ethereum.on('accountsChanged', handleAccountsChanged);
+  window.ethereum.on('chainChanged', handleChainChanged);
+
+  return () => {
+    window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+    window.ethereum.removeListener('chainChanged', handleChainChanged);
+  };
+};
+
+export const useWallet = () => {
+  const [account, setAccount] = useState<string>('');
+  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [isMantleNetwork, setIsMantleNetwork] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string>('');
+
+  const walletAvailable = isWalletAvailable();
+
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    if (!walletAvailable) return;
 
-  // Subscribe to wallet events
-  useEffect(() => {
     const unsubscribe = subscribeToWalletEvents(
-      (accounts) => {
-        if (accounts.length === 0) {
-          setState((prev) => ({
-            ...prev,
-            account: null,
-            shortAddress: null,
-          }));
-        } else {
-          setState((prev) => ({
-            ...prev,
-            account: accounts[0],
-            shortAddress: shortenAddress(accounts[0]),
-            error: null,
-          }));
-        }
+      (newAccount) => {
+        setAccount(newAccount || '');
+        setIsConnected(!!newAccount);
       },
-      (_chainId) => {
-        // chainChanged — refresh full state
-        refresh();
+      (chainId) => {
+        setIsMantleNetwork(isMantle(chainId));
       }
     );
-    return unsubscribe;
-  }, [refresh]);
 
-  const connect = useCallback(async () => {
-    if (!isWalletAvailable()) {
-      setState((prev) => ({
-        ...prev,
-        error: "No Web3 wallet detected. Please install MetaMask from metamask.io",
-      }));
+    // Check if already connected
+    const checkConnection = async () => {
+      try {
+        const connectedAccount = await connectWallet();
+        if (connectedAccount) {
+          setAccount(connectedAccount);
+          setIsConnected(true);
+          setIsMantleNetwork(isMantle());
+        }
+      } catch (err) {
+        console.error("Initial wallet check failed:", err);
+      }
+    };
+
+    checkConnection();
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [walletAvailable]);
+
+  const connect = async () => {
+    if (!walletAvailable) {
+      setError("MetaMask is not installed. Please install it to continue.");
       return;
     }
-    setState((prev) => ({ ...prev, isConnecting: true, error: null }));
-    try {
-      await connectWallet();
-      await refresh();
-    } catch (err: any) {
-      setState((prev) => ({
-        ...prev,
-        error: err.message || "Failed to connect wallet.",
-      }));
-    } finally {
-      setState((prev) => ({ ...prev, isConnecting: false }));
-    }
-  }, [refresh]);
 
-  const switchNetwork = useCallback(async () => {
-    setState((prev) => ({ ...prev, isSwitching: true, error: null }));
+    setLoading(true);
+    setError('');
+
+    try {
+      const address = await connectWallet();
+      if (address) {
+        setAccount(address);
+        setIsConnected(true);
+        setIsMantleNetwork(isMantle());
+      }
+    } catch (err: any) {
+      setError(err.message || "Failed to connect wallet");
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const switchNetwork = async () => {
+    if (!isConnected) {
+      setError("Please connect your wallet first");
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
     try {
       await switchToMantle();
-      await refresh();
+      setIsMantleNetwork(true);
     } catch (err: any) {
-      setState((prev) => ({
-        ...prev,
-        error: err.message || "Failed to switch network.",
-      }));
+      setError(err.message || "Failed to switch to Mantle network");
     } finally {
-      setState((prev) => ({ ...prev, isSwitching: false }));
+      setLoading(false);
     }
-  }, [refresh]);
-
-  const clearError = useCallback(() => {
-    setState((prev) => ({ ...prev, error: null }));
-  }, []);
+  };
 
   return {
-    ...state,
+    account,
+    isConnected,
+    isMantleNetwork,
+    loading,
+    error,
+    walletAvailable,
     connect,
     switchNetwork,
-    clearError,
-    mantleExplorerUrl: MANTLE_MAINNET.blockExplorerUrls[0],
+    shortenAddress: () => shortenAddress(account),
   };
-}
+};
