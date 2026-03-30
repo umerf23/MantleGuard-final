@@ -1,76 +1,67 @@
+// src/components/WalletModal.tsx
 import { useState } from 'react';
 import { ethers } from 'ethers';
-import { getCurrentChainId, isMantle } from '../lib/web3';
 
-interface WalletOption {
-  name: string;
-  icon: string;
-}
-
-const walletOptions: WalletOption[] = [
-  { name: 'MetaMask', icon: '🦊' },
-  { name: 'Rainbow', icon: '🌈' },
-  { name: 'WalletConnect', icon: '🔗' },
-  { name: 'Phantom', icon: '👻' },
-  { name: 'Coinbase Wallet', icon: '💰' },
+const walletOptions = [
+  { name: 'MetaMask', icon: '🦊', rdns: 'io.metamask' },
+  { name: 'Phantom', icon: '👻', rdns: 'app.phantom' },
+  { name: 'Rainbow', icon: '🌈', rdns: 'me.rainbow' },
+  { name: 'Coinbase Wallet', icon: '💰', rdns: 'com.coinbase.wallet' },
   { name: 'Trust Wallet', icon: '🛡️' },
-  { name: 'HaHa Wallet', icon: '😄' },
+  { name: 'Razor Wallet', icon: '🪒' },   // since you mentioned Razor
   { name: 'Browser Wallet', icon: '🌐' },
 ];
 
 interface WalletModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onConnected: (
-    address: string,
-    provider: ethers.BrowserProvider,
-    signer: ethers.Signer,
-    isMantleNetwork: boolean  // ← added so parent can sync network state
-  ) => void;
+  onConnected: (address: string, provider: ethers.BrowserProvider, signer: ethers.Signer) => void;
 }
 
 export default function WalletModal({ isOpen, onClose, onConnected }: WalletModalProps) {
   const [loading, setLoading] = useState<string | null>(null);
-  const [error, setError] = useState<string>('');
+  const [error, setError] = useState('');
 
-  const connectWallet = async (walletName: string) => {
+  const connect = async (walletName: string, rdns?: string) => {
     setLoading(walletName);
     setError('');
 
     try {
-      let provider: any;
+      let providerInstance: any = null;
 
-      if (walletName === 'Phantom' && (window as any).phantom?.ethereum) {
-        provider = (window as any).phantom.ethereum;
-      } else if (walletName === 'Trust Wallet' && (window as any).trustwallet) {
-        provider = (window as any).trustwallet;
-      } else if (walletName === 'Rainbow' && (window as any).rainbow) {
-        provider = (window as any).rainbow;
-      } else {
-        if (!(window as any).ethereum) {
-          throw new Error('No wallet detected. Please install a wallet like MetaMask.');
-        }
-        provider = (window as any).ethereum;
+      // Try EIP-6963 first (modern standard)
+      if ((window as any).ethereum?.providers) {
+        providerInstance = (window as any).ethereum.providers.find((p: any) => 
+          (rdns && p[rdns]) || p.isMetaMask
+        );
       }
 
-      await provider.request({ method: 'eth_requestAccounts' });
+      if (!providerInstance) {
+        providerInstance = (window as any).ethereum;
+      }
 
-      const ethersProvider = new ethers.BrowserProvider(provider);
+      if (!providerInstance || typeof providerInstance.request !== 'function') {
+        throw new Error("No valid wallet detected. Please make sure MetaMask is installed and enabled.");
+      }
+
+      // Request accounts
+      const accounts = await providerInstance.request({ 
+        method: 'eth_requestAccounts' 
+      });
+
+      const ethersProvider = new ethers.BrowserProvider(providerInstance);
       const signer = await ethersProvider.getSigner();
-      const address = await signer.getAddress();
+      const address = accounts[0];
 
-      // Try switching to Mantle; don't throw if user rejects the switch
-      let networkSwitched = false;
+      // Switch to Mantle Mainnet safely
       try {
-        await provider.request({
+        await providerInstance.request({
           method: 'wallet_switchEthereumChain',
           params: [{ chainId: '0x1388' }],
         });
-        networkSwitched = true;
-      } catch (switchError: any) {
-        if (switchError.code === 4902) {
-          // Chain not added yet — add it
-          await provider.request({
+      } catch (switchErr: any) {
+        if (switchErr.code === 4902) {
+          await providerInstance.request({
             method: 'wallet_addEthereumChain',
             params: [{
               chainId: '0x1388',
@@ -80,25 +71,21 @@ export default function WalletModal({ isOpen, onClose, onConnected }: WalletModa
               blockExplorerUrls: ['https://explorer.mantle.xyz'],
             }],
           });
-          networkSwitched = true;
-        } else if (switchError.code === 4001) {
-          // User rejected the switch — that's okay, still connected
-          networkSwitched = false;
-        } else {
-          throw switchError;
         }
       }
 
-      // Read the actual current chainId after the switch attempt
-      const currentChainId = getCurrentChainId() ?? provider.chainId;
-      const onMantle = networkSwitched || isMantle(currentChainId);
-
-      onConnected(address, ethersProvider, signer, onMantle);
+      onConnected(address, ethersProvider, signer);
       onClose();
 
     } catch (err: any) {
       console.error(err);
-      setError(err.message || `Failed to connect to ${walletName}. Please try again.`);
+      let msg = err.message || "Connection failed";
+
+      if (msg.includes("Unexpected error") || msg.includes("evmAsk")) {
+        msg = "Phantom Wallet (or another extension) is causing conflict.\n\nPlease disable Phantom Wallet extension temporarily and try again with MetaMask.";
+      }
+
+      setError(msg);
     } finally {
       setLoading(null);
     }
@@ -108,79 +95,61 @@ export default function WalletModal({ isOpen, onClose, onConnected }: WalletModa
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-zinc-900 rounded-3xl w-full max-w-2xl overflow-hidden shadow-2xl">
+      <div className="bg-white dark:bg-zinc-900 rounded-3xl w-full max-w-2xl overflow-hidden">
         <div className="flex flex-col md:flex-row">
-
-          {/* Left: Wallet List */}
+          {/* Wallet List */}
           <div className="w-full md:w-1/2 p-8 border-b md:border-r border-gray-200 dark:border-zinc-700">
             <h2 className="text-2xl font-semibold mb-6">Connect a Wallet</h2>
-
-            <div className="space-y-3 max-h-[420px] overflow-y-auto pr-2">
-              {walletOptions.map((wallet) => (
+            
+            <div className="space-y-3">
+              {walletOptions.map((w) => (
                 <button
-                  key={wallet.name}
-                  onClick={() => connectWallet(wallet.name)}
+                  key={w.name}
+                  onClick={() => connect(w.name, w.rdns)}
                   disabled={!!loading}
-                  className="w-full flex items-center gap-4 p-4 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-2xl transition-all text-left disabled:opacity-70"
+                  className="w-full flex items-center gap-4 p-4 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-2xl text-left disabled:opacity-60"
                 >
-                  <div className="text-3xl flex-shrink-0">{wallet.icon}</div>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate">{wallet.name}</div>
-                    <div className="text-xs text-gray-500">Recommended</div>
+                  <span className="text-3xl">{w.icon}</span>
+                  <div>
+                    <div className="font-medium">{w.name}</div>
+                    <div className="text-xs text-gray-500">Click to connect</div>
                   </div>
-                  {loading === wallet.name && (
-                    <div className="animate-spin text-xl">⟳</div>
-                  )}
+                  {loading === w.name && <span className="ml-auto animate-spin">⟳</span>}
                 </button>
               ))}
             </div>
-
-            {error && (
-              <p className="mt-4 text-red-500 text-sm text-center">{error}</p>
-            )}
           </div>
 
-          {/* Right: Explanation */}
-          <div className="w-full md:w-1/2 p-8 bg-gray-50 dark:bg-zinc-950 flex flex-col">
-            <div className="flex justify-end">
-              <button
-                onClick={onClose}
-                className="text-2xl text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-              >
-                ✕
-              </button>
-            </div>
-
-            <h3 className="text-xl font-semibold mt-6 mb-8">What is a Wallet?</h3>
-
-            <div className="space-y-10 flex-1">
+          {/* Info Side */}
+          <div className="w-full md:w-1/2 p-8 bg-gray-50 dark:bg-zinc-950">
+            <button onClick={onClose} className="float-right text-2xl text-gray-400">✕</button>
+            
+            <h3 className="text-xl font-semibold mt-8 mb-6">What is a Wallet?</h3>
+            
+            <div className="space-y-8">
               <div>
-                <div className="text-5xl mb-4">🏠</div>
-                <h4 className="font-medium text-lg mb-2">A Home for your Digital Assets</h4>
-                <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
-                  Wallets are used to send, receive, store, and display digital assets like MNT and NFTs on Mantle.
+                <div className="text-4xl mb-3">🏠</div>
+                <h4 className="font-medium">A Home for Digital Assets</h4>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                  Used to store MNT and interact with Mantle dApps.
                 </p>
               </div>
-
               <div>
-                <div className="text-5xl mb-4">🔑</div>
-                <h4 className="font-medium text-lg mb-2">A New Way to Log In</h4>
-                <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
-                  Instead of creating new accounts and passwords, just connect your wallet to MantleGuard.
+                <div className="text-4xl mb-3">🔑</div>
+                <h4 className="font-medium">Secure Login</h4>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                  No passwords — just connect your wallet.
                 </p>
               </div>
             </div>
-
-            <a
-              href="https://mantle.xyz"
-              target="_blank"
-              rel="noreferrer"
-              className="text-blue-600 hover:underline text-sm mt-auto pt-6"
-            >
-              Learn more about Mantle Wallets →
-            </a>
           </div>
         </div>
+
+        {error && (
+          <div className="p-4 bg-red-50 dark:bg-red-950 text-red-600 dark:text-red-400 text-sm border-t">
+            {error.split('\n').map((line, i) => <p key={i}>{line}</p>)}
+          </div>
+        )}
       </div>
     </div>
   );
